@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: makrounatn-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-makrouna}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-makrouna}
+      POSTGRES_DB: ${POSTGRES_DB:-makrouna}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-makrouna} -d ${POSTGRES_DB:-makrouna}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db-data:
