@@ -2,6 +2,8 @@
 
 Site de commande en ligne pour une cuisine tunisienne spécialisée dans les pâtes au thon, poulpe, fruits de mer, anguille et bœuf. Les clients composent leur panier, indiquent leurs coordonnées et reçoivent une confirmation après l'enregistrement de leur commande.
 
+Le projet tourne entièrement en conteneurs Docker (application + base de données), sans dépendance à un fournisseur d'hébergement propriétaire.
+
 ## Sommaire
 
 - [Technologies](#technologies)
@@ -18,12 +20,13 @@ Site de commande en ligne pour une cuisine tunisienne spécialisée dans les pâ
 
 ## Technologies
 
-- TanStack Start, React 19 et TypeScript
-- Tailwind CSS avec une identité visuelle personnalisée
-- Netlify Database (Postgres) et Drizzle ORM pour les clients, commandes et points fidélité
+- React 19, TypeScript et TanStack Start (`@tanstack/react-start`) pour le rendu serveur et les routes fichiers
+- TanStack Router pour le routage type-safe côté client
+- Tailwind CSS 4 avec une identité visuelle personnalisée
+- Vite 7 pour le build, et `srvx` pour servir le build de production (serveur Node natif basé sur les standards Web Fetch)
 - Zod pour la validation des données côté serveur
-- Netlify Forms pour transmettre les nouvelles commandes aux notifications du projet
-- Netlify pour le déploiement et l'exécution serveur
+- PostgreSQL 16 et Drizzle ORM (`drizzle-orm/node-postgres`) pour les clients, commandes et points fidélité
+- Docker et Docker Compose pour l'exécution locale et la base de données, pnpm comme gestionnaire de paquets
 
 ## Fonctionnalités
 
@@ -33,24 +36,21 @@ Site de commande en ligne pour une cuisine tunisienne spécialisée dans les pâ
 - Fidélité automatique par numéro de téléphone
 - Dessert offert à chaque dixième commande
 - Enregistrement persistant des commandes
-- Notification Netlify Forms contenant le détail de chaque commande
 
 ## Architecture
 
-Le parcours d'achat est une page unique qui appelle un endpoint serveur, lequel revalide les prix et persiste la commande avant de déclencher la notification.
+Le parcours d'achat est une page unique qui appelle un endpoint serveur, lequel revalide les prix et persiste la commande.
 
 ```mermaid
 flowchart LR
     A["src/routes/index.tsx<br/>Menu, panier, formulaire"] -->|"POST JSON"| B["src/routes/api.orders.ts<br/>Validation Zod + calcul des prix"]
     B -->|"lecture des prix"| C["src/data/products.ts<br/>Catalogue source unique"]
-    B -->|"transaction Drizzle"| D[("Netlify Database<br/>customers / orders")]
-    A -->|"si commande enregistrée"| E["public/__forms.html<br/>Notification Netlify Forms"]
+    B -->|"transaction Drizzle"| D[("PostgreSQL (Docker)<br/>customers / orders")]
 ```
 
 - **Client** (`src/routes/index.tsx`) : gère l'état du panier, affiche la carte et soumet la commande en JSON à `/api/orders`.
 - **Serveur** (`src/routes/api.orders.ts`) : seul endroit qui valide les données, recalcule les prix depuis le catalogue et écrit en base dans une transaction.
-- **Base de données** (`db/schema.ts`, `db/index.ts`) : Netlify Database (Postgres) via Drizzle ORM, avec les tables `customers` et `orders`.
-- **Notifications** : une fois la commande enregistrée, le client envoie une soumission au formulaire statique `public/__forms.html` pour déclencher les emails Netlify Forms, sans jamais faire dépendre l'enregistrement de la commande de cette étape.
+- **Base de données** (`db/schema.ts`, `db/index.ts`) : PostgreSQL via Drizzle ORM (`drizzle-orm/node-postgres`), avec les tables `customers` et `orders`.
 
 ## Structure du projet
 
@@ -66,28 +66,38 @@ src/
   styles.css           # Identité visuelle et responsive design
 db/
   schema.ts            # Tables Drizzle `customers` et `orders`
-  index.ts             # Client Netlify Database
-netlify/
-  database/migrations/ # Migrations SQL générées par drizzle-kit
+  index.ts             # Client Postgres (drizzle-orm/node-postgres)
+netlify/database/migrations/ # Migrations SQL générées par drizzle-kit
 public/
-  __forms.html          # Squelette statique requis pour la détection Netlify Forms
   images/                # Visuels de marque
+docker-compose.yml       # Service Postgres local
+.env.example             # Variables d'environnement (DATABASE_URL, identifiants Postgres)
 ```
 
 ## Développement local
 
+Tout tourne dans Docker, rien n'est installé sur la machine hôte (Docker Engine + Compose mis à part).
+
 ```bash
-pnpm install
-pnpm dev
+cp .env.example .env
+docker compose up -d db
 ```
 
-Le site est disponible sur le port indiqué par Vite (3000 par défaut). Pour émuler les services Netlify localement, utiliser `netlify dev --port 8889`.
-
-Autres commandes utiles :
+Puis, dans un conteneur Node éphémère (exemple avec `node:20-alpine`) :
 
 ```bash
-pnpm build                                    # Compilation de production
-pnpm exec drizzle-kit generate --name <nom>   # Génère une migration après modification du schéma
+corepack enable && corepack prepare pnpm@10 --activate
+pnpm install
+pnpm approve-builds --all   # autorise les scripts natifs (esbuild, sharp)
+pnpm db:migrate             # applique les migrations sur le Postgres Docker
+pnpm dev                    # serveur de développement sur http://localhost:3000
+```
+
+Pour un build de production local :
+
+```bash
+pnpm build
+pnpm start   # sert dist/server + dist/client via srvx
 ```
 
 ## Base de données
@@ -97,7 +107,7 @@ Le schéma (`db/schema.ts`) définit deux tables Postgres via Drizzle ORM :
 - **`customers`** : `id`, `name`, `phone` (unique, sert d'identifiant de fidélité), `orderCount`, `createdAt`, `updatedAt`.
 - **`orders`** : `id` (uuid), `customerId`, `customerName`, `phone`, `address`, `city`, `notes`, `items` (jsonb du détail des plats commandés), `subtotal`, `status`, `loyaltyReward`, `createdAt`.
 
-Les migrations sont générées avec `drizzle-kit` et stockées dans `netlify/database/migrations/`, où elles sont appliquées automatiquement au déploiement.
+La chaîne de connexion est lue depuis la variable d'environnement `DATABASE_URL` (voir `.env.example`). Les migrations sont générées avec `pnpm exec drizzle-kit generate --name <nom>` et appliquées avec `pnpm db:migrate`.
 
 ## API commandes
 
@@ -115,13 +125,15 @@ Le numéro de téléphone normalisé identifie chaque client. Toutes les 10 comm
 
 ## Notifications de commande
 
-Après l'enregistrement réussi en base, le client envoie une soumission au formulaire Netlify `nouvelle-commande` (déclaré dans `public/__forms.html`) contenant le récapitulatif de la commande. Une panne de cette notification ne supprime jamais une commande déjà enregistrée.
-
-Dans Netlify, ajouter l'adresse du restaurateur dans **Project configuration → Notifications → Emails and webhooks → Form submission notifications** afin de recevoir un email à chaque commande.
+La notification du restaurateur à chaque nouvelle commande reste à mettre en place (l'intégration précédente reposait sur Netlify Forms, retirée avec la migration vers une infrastructure auto-hébergée).
 
 ## Déploiement
 
-Le site est déployé sur Netlify (`netlify.toml`) : `vite build` publie `dist/client`, les fonctions serveur de TanStack Start s'exécutent via le plugin Netlify, et les migrations de base de données sont appliquées automatiquement.
+Le site est conçu pour tourner dans des conteneurs Docker sur un serveur que vous contrôlez (VPS, etc.) :
+
+- `docker-compose.yml` fournit le service PostgreSQL avec un volume persistant.
+- `pnpm build` puis `pnpm start` (ou l'équivalent dans un `Dockerfile` applicatif) démarrent le serveur Node natif basé sur `srvx`.
+- Les migrations (`pnpm db:migrate`) doivent être appliquées avant le démarrage de l'application en production.
 
 ## Conventions
 

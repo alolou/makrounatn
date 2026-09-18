@@ -3,5 +3,7 @@ dist/
 .output/
 .vinxi/
 .netlify/
+.pnpm-store/
 .env
 *.log
+src/routeTree.gen.ts
